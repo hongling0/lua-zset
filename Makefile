@@ -1,18 +1,22 @@
-all: skiplist.so
+.PHONY:clean install
+.PHONY:default
+INCLUDE_LUA?=
+INCLUDE_SKYNET?=
+SHARED:=-fPIC --shared
+CFLAGS=-g -O3 -Wall $(INCLUDE_LUA)
+LUA_CLIB_PATH:=luaclib
+TARGET:=$(LUA_CLIB_PATH)/skipset.so $(LUA_CLIB_PATH)/skiplist.so
 
-CC = gcc
-CFLAGS = -g3 -O0 -Wall -fPIC --shared
-LUA_INCLUDE_DIR = /usr/local/include
-DEFS = -DLUA_COMPAT_5_2
+default:$(TARGET)
 
-luajit: LUA_INCLUDE_DIR = /usr/local/include/luajit-2.1
-luajit: skiplist.so
+$(LUA_CLIB_PATH) :
+	@mkdir $(LUA_CLIB_PATH)
 
-skiplist.so: skiplist.h skiplist.c lua-skiplist.c
-	$(CC)  $(CFLAGS)  -I$(LUA_INCLUDE_DIR) $(DEFS)  $^ -o $@
+$(LUA_CLIB_PATH)/skipset.so: lua-skipset.c | $(LUA_CLIB_PATH)
+	$(CC) -std=gnu99 $(CFLAGS) $(SHARED) $^ -o $@
 
-test:
-	lua test_sl.lua
+$(LUA_CLIB_PATH)/skiplist.so: skiplist.c lua-skiplist.c | $(LUA_CLIB_PATH)
+	$(CC) -std=gnu99 $(CFLAGS) $(SHARED) $^ -o $@
 
 clean:
-	-rm skiplist.so
+	$(RM) $(TARGET)
