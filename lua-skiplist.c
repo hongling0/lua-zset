@@ -22,8 +22,8 @@ _to_skiplist(lua_State *L) {
 static int
 _insert(lua_State *L) {
     skiplist *sl = _to_skiplist(L);
-    double score = luaL_checknumber(L, 2);
-    lua_Integer obj = luaL_checkinteger(L, 3);
+    lua_Integer obj = luaL_checkinteger(L, 2);
+    double score = luaL_checknumber(L, 3);
     slInsert(sl, score, obj);
     return 0;
 }
@@ -31,8 +31,8 @@ _insert(lua_State *L) {
 static int
 _delete(lua_State *L) {
     skiplist *sl = _to_skiplist(L);
-    double score = luaL_checknumber(L, 2);
-    lua_Integer obj = luaL_checkinteger(L, 3);
+    lua_Integer obj = luaL_checkinteger(L, 2);
+    double score = luaL_checknumber(L, 3);
     lua_pushboolean(L, slDelete(sl, score, obj));
     return 1;
 }
@@ -69,10 +69,10 @@ _get_count(lua_State *L) {
 }
 
 static int
-_get_rank(lua_State *L) {
+_rank_byobj(lua_State *L) {
     skiplist *sl = _to_skiplist(L);
-    double score = luaL_checknumber(L, 2);
-    lua_Integer obj = luaL_checkinteger(L, 3);
+    lua_Integer obj = luaL_checkinteger(L, 2);
+    double score = luaL_checknumber(L, 3);
 
     unsigned long rank = slGetRank(sl, score, obj);
     if (rank == 0) {
@@ -84,103 +84,32 @@ _get_rank(lua_State *L) {
 }
 
 static int
-_get_rank_range(lua_State *L) {
-    skiplist *sl = _to_skiplist(L);
-    unsigned long r1 = luaL_checkinteger(L, 2);
-    unsigned long r2 = luaL_checkinteger(L, 3);
-    int reverse, rangelen;
-    if (r1 <= r2) {
-        reverse = 0;
-        rangelen = r2 - r1 + 1;
-    } else {
-        reverse = 1;
-        rangelen = r1 - r2 + 1;
-    }
-
-    skiplistNode *node = slGetNodeByRank(sl, r1);
-    lua_createtable(L, rangelen, 0);
-    int n = 0;
-    while (node && n < rangelen) {
-        n++;
-        lua_pushinteger(L, node->obj);
-        lua_rawseti(L, -2, n);
-        node = reverse ? node->backward : node->level[0].forward;
-    }
-    return 1;
-}
-
-static int
-_get_rank_score_range(lua_State *L) {
-    skiplist *sl = _to_skiplist(L);
-    unsigned long r1 = luaL_checkinteger(L, 2);
-    unsigned long r2 = luaL_checkinteger(L, 3);
-    int reverse, rangelen;
-    if (r1 <= r2) {
-        reverse = 0;
-        rangelen = r2 - r1 + 1;
-    } else {
-        reverse = 1;
-        rangelen = r1 - r2 + 1;
-    }
-
-    skiplistNode *node = slGetNodeByRank(sl, r1);
-    lua_createtable(L, rangelen, 0);
-    int n = 0;
-    while (node && n < rangelen) {
-        n++;
-        lua_createtable(L, 2, 0);
-        lua_pushinteger(L, node->obj);
-        lua_rawseti(L, -2, 1);
-        lua_pushinteger(L, node->score);
-        lua_rawseti(L, -2, 2);
-
-        lua_rawseti(L, -2, n);
-        node = reverse ? node->backward : node->level[0].forward;
-    }
-    return 1;
-}
-
-static int
-_get_score_range(lua_State *L) {
+_ranks_byscore(lua_State *L) {
     skiplist *sl = _to_skiplist(L);
     double s1 = luaL_checknumber(L, 2);
     double s2 = luaL_checknumber(L, 3);
-    int reverse;
-    skiplistNode *node;
 
-    if (s1 <= s2) {
-        reverse = 0;
-        node = slFirstInRange(sl, s1, s2);
-    } else {
-        reverse = 1;
-        node = slLastInRange(sl, s2, s1);
-    }
-
-    lua_newtable(L);
-    int n = 0;
-    while (node) {
-        if (reverse) {
-            if (node->score < s2)
-                break;
-        } else {
-            if (node->score > s2)
-                break;
+    skiplistNode *node = slFirstInRange(sl, s1, s2);
+    if (node && slCompareScores(sl, node->score, s2) <= 0) {
+        unsigned long start = slGetRank(sl, node->score, node->obj);
+        lua_pushinteger(L, start);
+        int n = 0;
+        while (node && slCompareScores(sl, node->score, s2) <= 0) {
+            n++;
+            node = node->level[0].forward;
         }
-        n++;
-
-        lua_pushinteger(L, node->obj);
-        lua_rawseti(L, -2, n);
-
-        node = reverse ? node->backward : node->level[0].forward;
+        lua_pushinteger(L, start + n - 1);
+        return 2;
     }
-    return 1;
+    return 0;
 }
 
 static int
-_get_member_by_rank(lua_State *L){
+_obj_byrank(lua_State *L) {
     skiplist *sl = _to_skiplist(L);
-    unsigned long r = luaL_checkinteger(L, 2);
-    skiplistNode *node = slGetNodeByRank(sl, r);
+    unsigned long rank = luaL_checkinteger(L, 2);
+
+    skiplistNode *node = slGetNodeByRank(sl, rank);
     if (node) {
         lua_pushinteger(L, node->obj);
         return 1;
@@ -189,8 +118,52 @@ _get_member_by_rank(lua_State *L){
 }
 
 static int
+_objs_byrank(lua_State *L) {
+    skiplist *sl = _to_skiplist(L);
+    unsigned long r1 = luaL_checkinteger(L, 2);
+    unsigned long r2 = luaL_checkinteger(L, 3);
+    
+    if (r1 > r2) {
+        luaL_error(L, "invalid rank range: r1(%lu) > r2(%lu)", r1, r2);
+    }
+
+    unsigned long rangelen = r2 - r1 + 1;
+    skiplistNode *node = slGetNodeByRank(sl, r1);
+    lua_createtable(L, rangelen, 0);
+    int n = 0;
+    while (node && n < rangelen) {
+        n++;
+        lua_pushinteger(L, node->obj);
+        lua_rawseti(L, -2, n);
+        node = node->level[0].forward;
+    }
+    return 1;
+}
+
+
+static int
+_objs_byscore(lua_State *L) {
+    skiplist *sl = _to_skiplist(L);
+    double s1 = luaL_checknumber(L, 2);
+    double s2 = luaL_checknumber(L, 3);
+
+    skiplistNode *node = slFirstInRange(sl, s1, s2);
+    lua_newtable(L);
+    int n = 0;
+    while (node && slCompareScores(sl, node->score, s2) <= 0) {
+        n++;
+        lua_pushinteger(L, node->obj);
+        lua_rawseti(L, -2, n);
+        node = node->level[0].forward;
+    }
+    return 1;
+}
+
+static int
 _new(lua_State *L) {
+    char cmp = luaL_optinteger(L, 1, 0);
     skiplist *psl = slCreate();
+    psl->cmp = cmp;
 
     skiplist **sl = (skiplist **)lua_newuserdata(L, sizeof(skiplist *));
     *sl = psl;
@@ -214,15 +187,14 @@ luaopen_skiplist_c(lua_State *L) {
     luaL_Reg l[] = {
         { "insert", _insert },
         { "delete", _delete },
-        { "delete_by_rank", _delete_by_rank },
+        { "delete_byrank", _delete_by_rank },
 
         { "get_count", _get_count },
-        { "get_rank", _get_rank },
-        { "get_rank_range", _get_rank_range },
-        { "get_score_range", _get_score_range },
-        { "get_member_by_rank", _get_member_by_rank},
-
-        { "get_rank_score_range", _get_rank_score_range },
+        { "rank_byobj", _rank_byobj },
+        { "ranks_byscore", _ranks_byscore },
+        { "obj_byrank", _obj_byrank },
+        { "objs_byrank", _objs_byrank },
+        { "objs_byscore", _objs_byscore },
 
         { NULL, NULL }
     };

@@ -4,6 +4,7 @@
  */
 
 // skiplist similar with the version in redis
+#include <stdint.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,16 @@
 
 #define SKIPLIST_MAXLEVEL 32
 #define SKIPLIST_P 0.25
+
+int slCompareScores(skiplist *sl, double score1, double score2) {
+    if (score1 < score2) {
+        return sl->cmp ? 1 : -1;
+    }
+    if (score1 > score2) {
+        return sl->cmp ? -1 : 1;
+    }
+    return 0;
+}
 
 skiplistNode *slCreateNode(int level, double score, int64_t obj) {
     skiplistNode *n = malloc(sizeof(*n) + level * sizeof(struct skiplistLevel));
@@ -32,6 +43,7 @@ skiplist *slCreate(void) {
     sl = malloc(sizeof(*sl));
     sl->level = 1;
     sl->length = 0;
+    sl->cmp = 0; // 默认升序
     sl->header = slCreateNode(SKIPLIST_MAXLEVEL, 0, 0);
     for (j = 0; j < SKIPLIST_MAXLEVEL; j++) {
         sl->header->level[j].forward = NULL;
@@ -53,7 +65,7 @@ void slFree(skiplist *sl) {
     free(sl);
 }
 
-int slRandomLevel(void) {
+static int slRandomLevel(void) {
     int level = 1;
     while ((random() & 0xffff) < (SKIPLIST_P * 0xffff))
         level += 1;
@@ -69,16 +81,16 @@ void slInsert(skiplist *sl, double score, int64_t obj) {
     for (i = sl->level - 1; i >= 0; i--) {
         /* store rank that is crossed to reach the insert position */
         rank[i] = i == (sl->level - 1) ? 0 : rank[i + 1];
-        while (x->level[i].forward && (x->level[i].forward->score < score || (x->level[i].forward->score == score && (x->level[i].forward->obj - obj) < 0))) {
+        while (x->level[i].forward && (slCompareScores(sl, x->level[i].forward->score, score) < 0 || (slCompareScores(sl, x->level[i].forward->score, score) == 0 && (x->level[i].forward->obj - obj) < 0))) {
             rank[i] += x->level[i].span;
             x = x->level[i].forward;
         }
         update[i] = x;
     }
     /* we assume the key is not already inside, since we allow duplicated
-     * scores, and the re-insertion of score and redis object should never
-     * happen since the caller of slInsert() should test in the hash table
-     * if the element is already inside or not. */
+	 * scores, and the re-insertion of score and redis object should never
+	 * happen since the caller of slInsert() should test in the hash table
+	 * if the element is already inside or not. */
     level = slRandomLevel();
     if (level > sl->level) {
         for (i = sl->level; i < level; i++) {
@@ -139,7 +151,8 @@ int slDelete(skiplist *sl, double score, int64_t obj) {
 
     x = sl->header;
     for (i = sl->level - 1; i >= 0; i--) {
-        while (x->level[i].forward && (x->level[i].forward->score < score || (x->level[i].forward->score == score && (x->level[i].forward->obj - obj) < 0)))
+        while (x->level[i].forward && 
+            (slCompareScores(sl, x->level[i].forward->score, score) < 0 || (slCompareScores(sl, x->level[i].forward->score, score) == 0 && (x->level[i].forward->obj - obj) < 0)))
             x = x->level[i].forward;
         update[i] = x;
     }
@@ -150,14 +163,12 @@ int slDelete(skiplist *sl, double score, int64_t obj) {
         slDeleteNode(sl, x, update);
         slFreeNode(x);
         return 1;
-    } else {
-        return 0; /* not found */
     }
     return 0; /* not found */
 }
 
-/* Delete all the elements with rank between start and end from the skiplist.
- * Start and end are inclusive. Note that start and end need to be 1-based */
+/* Delete all elements with rank between start and end (inclusive)
+ * Note: ranks are 1-based */
 unsigned long slDeleteByRank(skiplist *sl, unsigned int start, unsigned int end, slDeleteCb cb, void *ud) {
     skiplistNode *update[SKIPLIST_MAXLEVEL], *x;
     unsigned long traversed = 0, removed = 0;
@@ -186,10 +197,9 @@ unsigned long slDeleteByRank(skiplist *sl, unsigned int start, unsigned int end,
     return removed;
 }
 
-/* Find the rank for an element by both score and key.
- * Returns 0 when the element cannot be found, rank otherwise.
- * Note that the rank is 1-based due to the span of sl->header to the
- * first element. */
+/* Get element rank by score and key
+ * Returns: 0 if not found, 1-based rank otherwise 
+ * (1-based due to header span) */
 unsigned long slGetRank(skiplist *sl, double score, int64_t o) {
     skiplistNode *x;
     unsigned long rank = 0;
@@ -197,7 +207,7 @@ unsigned long slGetRank(skiplist *sl, double score, int64_t o) {
 
     x = sl->header;
     for (i = sl->level - 1; i >= 0; i--) {
-        while (x->level[i].forward && (x->level[i].forward->score < score || (x->level[i].forward->score == score && (x->level[i].forward->obj - o) <= 0))) {
+        while (x->level[i].forward && (slCompareScores(sl, x->level[i].forward->score, score) < 0 || (slCompareScores(sl, x->level[i].forward->score, score) == 0 && (x->level[i].forward->obj - o) <= 0))) {
             rank += x->level[i].span;
             x = x->level[i].forward;
         }
@@ -210,7 +220,7 @@ unsigned long slGetRank(skiplist *sl, double score, int64_t o) {
     return 0;
 }
 
-/* Finds an element by its rank. The rank argument needs to be 1-based. */
+/* Get element by its 1-based rank */
 skiplistNode *slGetNodeByRank(skiplist *sl, unsigned long rank) {
     if (rank == 0 || rank > sl->length) {
         return NULL;
@@ -234,21 +244,20 @@ skiplistNode *slGetNodeByRank(skiplist *sl, unsigned long rank) {
     return NULL;
 }
 
-/* range [min, max], left & right both include */
-/* Returns if there is a part of the zset is in range. */
+/* Check if any element is in score range [min, max] (inclusive) */
 int slIsInRange(skiplist *sl, double min, double max) {
     skiplistNode *x;
 
     /* Test for ranges that will always be empty. */
-    if (min > max) {
+    if (slCompareScores(sl, min, max) > 0) {
         return 0;
     }
     x = sl->tail;
-    if (x == NULL || x->score < min)
+    if (x == NULL || slCompareScores(sl, x->score, min) < 0)
         return 0;
 
     x = sl->header->level[0].forward;
-    if (x == NULL || x->score > max)
+    if (x == NULL || slCompareScores(sl, x->score, max) > 0)
         return 0;
     return 1;
 }
@@ -266,7 +275,7 @@ skiplistNode *slFirstInRange(skiplist *sl, double min, double max) {
     x = sl->header;
     for (i = sl->level - 1; i >= 0; i--) {
         /* Go forward while *OUT* of range. */
-        while (x->level[i].forward && x->level[i].forward->score < min)
+        while (x->level[i].forward && slCompareScores(sl, x->level[i].forward->score, min) < 0)
             x = x->level[i].forward;
     }
 
@@ -288,10 +297,25 @@ skiplistNode *slLastInRange(skiplist *sl, double min, double max) {
     x = sl->header;
     for (i = sl->level - 1; i >= 0; i--) {
         /* Go forward while *IN* range. */
-        while (x->level[i].forward && x->level[i].forward->score <= max)
+        while (x->level[i].forward && slCompareScores(sl, x->level[i].forward->score, max) <= 0)
             x = x->level[i].forward;
     }
 
     /* This is an inner range, so this node cannot be NULL. */
     return x;
+}
+
+unsigned long slGetRankByScore(skiplist *sl, double score) {
+    skiplistNode *x;
+    unsigned long rank = 0;
+    int i;
+
+    x = sl->header;
+    for (i = sl->level - 1; i >= 0; i--) {
+        while (x->level[i].forward && slCompareScores(sl, x->level[i].forward->score, score) <= 0) {
+            rank += x->level[i].span;
+            x = x->level[i].forward;
+        }
+    }
+    return rank + 1;
 }

@@ -1,8 +1,6 @@
 #ifndef SKIPLIST_HH
 #define SKIPLIST_HH
 
-#include <stdint.h>
-
 typedef struct skiplistNode {
     int64_t obj;
     double score;
@@ -17,6 +15,7 @@ typedef struct skiplist {
     struct skiplistNode *header, *tail;
     unsigned long length;
     int level;
+    char cmp;
 } skiplist;
 
 typedef void (*slDeleteCb)(void *ud, int64_t obj);
@@ -34,5 +33,8 @@ skiplistNode *slGetNodeByRank(skiplist *sl, unsigned long rank);
 
 skiplistNode *slFirstInRange(skiplist *sl, double min, double max);
 skiplistNode *slLastInRange(skiplist *sl, double min, double max);
+
+int slCompareScores(skiplist *sl, double score1, double score2);
+unsigned long slGetRankByScore(skiplist *sl, double score);
 
 #endif //SKIPLIST_HH
